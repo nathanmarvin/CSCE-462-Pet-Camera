@@ -9,7 +9,10 @@
 #include "soc/soc.h"             // disable brownout problems
 #include "soc/rtc_cntl_reg.h"    // disable brownout problems
 #include "esp_http_server.h"
-#include <ESP32Servo.h>
+#include <Servo.h>
+
+Servo servo1;
+Servo servo2;
 
 // Replace with your network credentials
 const char* ssid = "longlongint";
@@ -37,14 +40,10 @@ const char* password = "1010101010";
 
 
 #define SERVO_1      14
-#define SERVO_2      15
+#define SERVO_2      13
 
 #define SERVO_STEP   5
 
-Servo servoN1;
-Servo servoN2;
-Servo servo1;
-Servo servo2;
 
 int servo1Pos = 0;
 int servo2Pos = 0;
@@ -291,16 +290,16 @@ void startCameraServer(){
 
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
-  servo1.setPeriodHertz(50);    // standard 50 hz servo
-  servo2.setPeriodHertz(50);    // standard 50 hz servo
-  servoN1.attach(2, 1000, 2000);
-  servoN2.attach(13, 1000, 2000);
+  // servo1.setPeriodHertz(50);    // standard 50 hz servo
+  // servo2.setPeriodHertz(50);    // standard 50 hz servo
+  // servoN1.attach(2, 1000, 2000);
+  // servoN2.attach(13, 1000, 2000);
   
-  servo1.attach(SERVO_1, 1000, 2000);
-  servo2.attach(SERVO_2, 1000, 2000);
+  // servo1.attach(SERVO_1, 1000, 2000);
+  // servo2.attach(SERVO_2, 1000, 2000);
   
-  servo1.write(servo1Pos);
-  servo2.write(servo2Pos);
+  // servo1.write(servo1Pos);
+  // servo2.write(servo2Pos);
   
   Serial.begin(115200);
   Serial.setDebugOutput(false);
@@ -354,6 +353,9 @@ void setup() {
   
   Serial.print("Camera Stream Ready! Go to: http://");
   Serial.println(WiFi.localIP());
+
+  servo2.attach(SERVO_2);
+  servo1.attach(SERVO_1);
   
   // Start streaming web server
   startCameraServer();
