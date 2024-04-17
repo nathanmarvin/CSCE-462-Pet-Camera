@@ -41,6 +41,7 @@ const char* password = "1010101010";
 
 #define SERVO_1      14
 #define SERVO_2      13
+#define LASER_PIN    12
 
 #define SERVO_STEP   5
 
@@ -96,6 +97,7 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
       <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('up');" ontouchstart="toggleCheckbox('up');">Up</button></td></tr>
       <tr><td align="center"><button class="button" onmousedown="toggleCheckbox('left');" ontouchstart="toggleCheckbox('left');">Left</button></td><td align="center"></td><td align="center"><button class="button" onmousedown="toggleCheckbox('right');" ontouchstart="toggleCheckbox('right');">Right</button></td></tr>
       <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('down');" ontouchstart="toggleCheckbox('down');">Down</button></td></tr>                   
+      <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('laser');" ontouchstart="toggleCheckbox('laser');">Laser</button></td></tr>
     </table>
    <script>
    function toggleCheckbox(x) {
@@ -210,6 +212,7 @@ static esp_err_t cmd_handler(httpd_req_t *req){
   //s->set_hmirror(s, 1);          // 0 = disable , 1 = enable
 
   int res = 0;
+  static bool laserOn = false;
   
   if(!strcmp(variable, "up")) {
     if(servo1Pos <= 170) {
@@ -242,6 +245,12 @@ static esp_err_t cmd_handler(httpd_req_t *req){
     }
     Serial.println(servo1Pos);
     Serial.println("Down");
+  }
+  else if(!strcmp(variable, "laser")) {
+    // Toggle the laser state
+    laserOn = !laserOn;
+    digitalWrite(LASER_PIN, laserOn ? HIGH : LOW);  // Turn laser on or off
+    Serial.println(laserOn ? "Laser ON" : "Laser OFF");
   }
   else {
     res = -1;
@@ -356,6 +365,9 @@ void setup() {
 
   servo2.attach(SERVO_2);
   servo1.attach(SERVO_1);
+
+  //Add Laser pin assignment: pin 12
+  pinMode(LASER_PIN, OUTPUT);
   
   // Start streaming web server
   startCameraServer();
