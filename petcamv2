@@ -13,6 +13,8 @@
 #include <JPEGDEC.h>
 #include <TFT_eSPI.h>
 #include "esp_jpg_decode.h"
+#include <Arduino.h>
+#include <driver/i2s.h>
 
 
 Servo servo1;
@@ -44,12 +46,63 @@ const char* password = "1010101010";
   #define PCLK_GPIO_NUM    22
 
 
-#define SERVO_1      14
-#define SERVO_2      13
-#define LASER_PIN    2
+#define SERVO_1      14 // 0
+#define SERVO_2      13 // 2
+#define LASER_PIN    2 // 15
 
 #define SERVO_STEP   5
 
+/////
+// Define the I2S pin configuration
+#define I2S_BCLK_PIN 0 // BCLK pin
+#define I2S_LRC_PIN 33  // LRC pin
+#define I2S_DOUT_PIN 32 // DIN (Data out) pin
+
+// Define the parameters for the audio playback
+#define SAMPLE_RATE 44100           // Sample rate in Hz
+#define SAMPLE_SIZE_BITS 16         // Sample size in bits
+#define SAMPLE_SIZE_BYTES (SAMPLE_SIZE_BITS / 8)
+
+// Define musical notes with their frequencies (in Hz)
+#define NOTE_C4 261.63
+#define NOTE_D4 293.66
+#define NOTE_E4 329.63
+#define NOTE_F4 349.23
+#define NOTE_G4 392.00
+#define NOTE_A4 440.00
+#define NOTE_B4 493.88
+#define NOTE_C5 523.25
+
+// Define durations for each note (in milliseconds)
+#define NOTE_DURATION 500
+
+// Volume control (adjust as needed)
+#define VOLUME_FACTOR 0.5 // Adjust volume by multiplying the samples with this factor
+////
+
+// Initialize the I2S configuration
+void initI2S() {
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_RIGHT,
+    .communication_format = I2S_COMM_FORMAT_I2S_MSB,
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 2,
+    .dma_buf_len = 1024 // Increase buffer length for smooth playback
+  };
+
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_BCLK_PIN,
+    .ws_io_num = I2S_LRC_PIN,
+    .data_out_num = I2S_DOUT_PIN,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+
+  i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_NUM_0, &pin_config);
+}
 
 int servo1Pos = 90;
 int servo2Pos = 90;
@@ -98,14 +151,16 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
   <body>
     <h1>Pet cam V1</h1>
     <img src="" id="photo" >
-    <img src="" id="photoStill" >
+
     <table>
       <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('up');" ontouchstart="toggleCheckbox('up');">Up</button></td></tr>
       <tr><td align="center"><button class="button" onmousedown="toggleCheckbox('left');" ontouchstart="toggleCheckbox('left');">Left</button></td><td align="center"></td><td align="center"><button class="button" onmousedown="toggleCheckbox('right');" ontouchstart="toggleCheckbox('right');">Right</button></td></tr>
       <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('down');" ontouchstart="toggleCheckbox('down');">Down</button></td></tr>                   
       <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('laser');" ontouchstart="toggleCheckbox('laser');">Laser</button></td></tr>
       <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('snap');" ontouchstart="toggleCheckbox('snap');">snapshot</button></td></tr>
+      <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('speaker');" ontouchstart="toggleCheckbox('speaker');">speaker</button></td></tr>
     </table>
+        <div id="pointsDiv"></div>
    <script>
    function toggleCheckbox(x) {
      var xhr = new XMLHttpRequest();
@@ -122,16 +177,28 @@ static const char PROGMEM INDEX_HTML[] = R"rawliteral(
   function toggleCheckbox(x) {
   var xhr = new XMLHttpRequest();
   if(x === 'snap') {
-    xhr.responseType = 'blob';
     xhr.onreadystatechange = function() {
       if (this.readyState == 4 && this.status == 200) {
-        var url = URL.createObjectURL(this.response);
-        document.getElementById("photoStill").src = url;
+        var pointsDiv = document.getElementById("pointsDiv");
+        pointsDiv.textContent = this.responseText;
       }
     };
     xhr.open("GET", "/snapshot", true);
     xhr.send();
-  } else {
+  }
+  else if (x === 'speaker') {
+          xhr.responseType = 'blob';
+          xhr.onreadystatechange = function() {
+          if (this.readyState == 4 && this.status == 200) {
+            var url = URL.createObjectURL(this.response);
+            document.getElementById("speaker").src = url;
+      }
+    };
+    xhr.open("GET", "/speaker", true);
+    xhr.send();
+        } 
+  
+  else {
     xhr.open("GET", "/action?go=" + x, true);
     xhr.send();
   }
@@ -141,6 +208,33 @@ window.onload = document.getElementById("photo").src = window.location.href.slic
   </body>
 </html>
 )rawliteral";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 static esp_err_t index_handler(httpd_req_t *req){
   httpd_resp_set_type(req, "text/html");
@@ -285,7 +379,6 @@ static esp_err_t camera_handler(httpd_req_t *req){
        Serial.println("error2");
      }
 
-    Serial.println(String(rgb[2]) + "," + String(rgb[1]) + "," + String(rgb[0]));
 
 
 
@@ -294,39 +387,87 @@ static esp_err_t camera_handler(httpd_req_t *req){
   ///////////////////////////////////////////////
       ///////////////////////////////////////////////
       ///////////////////////////////////////////////
+    for(int x = 0; x < fb->width; x++) {
+        for(int y = (4*fb->height)/10; y < (6*fb->height)/10; y++)  {
+            int index = (y * fb->width + x) * 3;
+
+            // int filter = rgb[index+2] - (rgb[index] + 4 + rgb[index+1])/2;
+            // if(filter < 0)
+            // rgb[index+2] = 0;
+            // else
+            // rgb[index+2] = rgb[index+2] - (rgb[index] + rgb[index+1])/2;
+
+
+            // rgb[index] = 0;
+            // rgb[index+1] = 0;
+            if((rgb[index] > 240 && rgb[index+1] > 240 && rgb[index+2] > 240) && (rgb[index+2] > rgb[index] && rgb[index+2] > rgb[index+1]) )
+                {
+                  rgb[index] = 255;
+                  rgb[index+1] = 255;
+                  rgb[index+2] = 255;
+                }
+              else
+              {
+                  rgb[index] = 0;
+                  rgb[index+1] = 0;
+                  rgb[index+2] = 0;
+                }
+        }
+    }
+            
+
+
 
       Serial.println(fb->width * fb->height * 3);
       //red +2 green +1 blue +0
     int points[2] = {0,0};
     int dotsFound = 0;
-    int distance = 0;
-    bool ifpoint = false;
+
     for(int x = 0; x < fb->width; x++) 
     {
+        int likely = 0;
         for(int y = (4*fb->height)/10; y < (6*fb->height)/10; y++) 
         {
             
             int index = (y * fb->width + x) * 3;
-            if(rgb[index+2] > 100 && rgb[index+2] > rgb[index+1] + 50 && rgb[index+2] > rgb[index] + 50) 
-            {
-                if(dotsFound == 0 || x - points[0] > 100)
+                if(dotsFound == 0 || x - points[0] > 20)
                 {  
-                    points[dotsFound] = x;
+                    if(rgb[index+2] > 10 )
+                    {
+                     Serial.print("A");
+                     Serial.print(x);
+                      points[dotsFound] += x;
+                    Serial.print("C\n");
                     dotsFound++;
-                    ifpoint = true;
-                    Serial.println(x);
                     break;
+                    }
+
                 }
-            }
-            if(ifpoint)
-            {
-              rgb[index+2] = 0;
-            }
 
         }
         if(dotsFound == 2)
+        {
+        Serial.println(points[1]-points[0]);
             break;
+        }
     }
+
+    int distance = (points[1]-points[0]);
+    if (dotsFound == 0)
+        distance = -1;//feet
+    else if (dotsFound == 1)
+        distance = 1000;//feet
+    else if (distance < 50)
+      distance = 100;//feet
+    else if (distance < 100)
+      distance = 10;//feet
+    else if(distance < 200)
+      distance = 5;//feet
+    else if(distance < 600)
+      distance = 1;//feet
+char distance_str[20];
+snprintf(distance_str, sizeof(distance_str), "distance: %d feet", distance);
+      
 
 
       ///////////////////////////////////////////////
@@ -337,7 +478,7 @@ static esp_err_t camera_handler(httpd_req_t *req){
   uint8_t * newjpeg_buf = NULL;
 
 bool result = fmt2jpg(rgb, ARRAY_LENGTH, fb->width, fb->height, PIXFORMAT_RGB888, 80, &newjpeg_buf, &newjpeg_len);
-
+heap_caps_free(ptrVal);     // rgb data
 
 
 ////////
@@ -345,25 +486,30 @@ bool result = fmt2jpg(rgb, ARRAY_LENGTH, fb->width, fb->height, PIXFORMAT_RGB888
 ///////
 
 
-  httpd_resp_set_type(req, "image/jpeg");
-  httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
-  httpd_resp_send(req, (const char *)newjpeg_buf, newjpeg_len);
-
+  // httpd_resp_set_type(req, "image/jpeg");
+  // httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+  // httpd_resp_send(req, (const char *)newjpeg_buf, newjpeg_len);
+  
+  snprintf(distance_str, sizeof(distance_str), "%s", distance_str);
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, distance_str, strlen(distance_str));
+  
   if(fb){
     esp_camera_fb_return(fb);
     fb = NULL;
     _jpg_buf = NULL;
   } else if(_jpg_buf){
     free(_jpg_buf);
-    free(newjpeg_buf);
     _jpg_buf = NULL;
   }
-  
+  free(newjpeg_buf);
+  newjpeg_buf = NULL;
 
 
-  heap_caps_free(ptrVal);     // rgb data
+
   s->set_framesize(s, FRAMESIZE_SVGA);
-    s->set_quality(s, 64);
+    s->set_quality(s, 12);
+
   return ESP_OK;
 }
 
@@ -462,7 +608,15 @@ static esp_err_t cmd_handler(httpd_req_t *req){
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, NULL, 0);
 }
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+static esp_err_t speaker_handler(httpd_req_t *req){
+  Serial.println("speak");
+    return httpd_resp_send(req, NULL, 0);
+}
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -496,10 +650,19 @@ void startCameraServer(int * picval, camera_config_t * configcam){
     .handler   = camera_handler,
     .user_ctx  = NULL
   };
+
+    httpd_uri_t speaker_uri = {
+    .uri       = "/speaker",
+    .method    = HTTP_GET,
+    .handler   = speaker_handler,
+    .user_ctx  = NULL
+};
+
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
       httpd_register_uri_handler(camera_httpd, &index_uri);
       httpd_register_uri_handler(camera_httpd, &cmd_uri);
       httpd_register_uri_handler(camera_httpd, &pic_uri);
+      httpd_register_uri_handler(camera_httpd, &speaker_uri);
   }
   config.server_port += 1;
   config.ctrl_port += 1;
@@ -548,7 +711,7 @@ void setup() {
   
   if(psramFound()){
     config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 64;
+    config.jpeg_quality = 12;
     config.fb_count = 1;
   } else {
     config.frame_size = FRAMESIZE_SVGA;
@@ -584,6 +747,7 @@ void setup() {
   pinMode(LASER_PIN, OUTPUT);
   
   // Start streaming web server
+
   int hasTakenPic = 0;
   startCameraServer(&hasTakenPic, &config);
 }
