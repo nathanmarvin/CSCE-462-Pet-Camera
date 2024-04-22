@@ -111,7 +111,7 @@ void initI2S() {
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count = 8,
     .dma_buf_len = 64,
-    .use_apll = false
+    .use_apll = true
   };
 
 
@@ -119,49 +119,16 @@ void initI2S() {
   i2s_set_pin(I2S_NUM_1, &pin_config);
   i2s_set_sample_rates(I2S_NUM_1, 8000); // Set the sample rate to 22050 Hz
 
-  
-  //i2s_set_sample_rates(I2S_NUM_1, 22050); // Set the sample rate to 22050 Hz
-  // Serial.println("1");
-  // i2s_driver_install(I2S_NUM_1, &i2s_config, 0, NULL);
-  // Serial.println("2");
-  // i2s_set_pin(I2S_NUM_1, &pin_config);
-  // Serial.println("3");
+}
+
+void deinitI2S() {
+  i2s_driver_uninstall(I2S_NUM_1); // Deinitialize the I2S driver for I2S_NUM_1
 }
 
 
-// Generate audio signal for a given frequency, duration, and volume
-void generateToneWithVolume(int16_t* buffer, size_t numSamples, float frequency, float sampleRate, float volume) {
-  size_t period = sampleRate / frequency;
-  for (size_t i = 0; i < numSamples; i++) {
-    int16_t sample = (i % period < period / 2) ? INT16_MAX : INT16_MIN;
-    buffer[i] = (int16_t)(sample * volume);
-    Serial.println((sample * volume));
-  }
-}
 
-void playNote(float frequency, int duration, int v) {
-  size_t numSamples = (SAMPLE_RATE * duration) / 1000;
-  int16_t *audioBuffer = (int16_t *)malloc(numSamples * SAMPLE_SIZE_BYTES);
 
-  if (audioBuffer == NULL) {
-    Serial.println("Error: Unable to allocate memory for audio buffer");
-    return;
-  }
 
-  generateToneWithVolume(audioBuffer, numSamples, frequency, SAMPLE_RATE, v);
-
-  size_t bytesWritten;
-  i2s_write(I2S_NUM_1, audioBuffer, numSamples * SAMPLE_SIZE_BYTES, &bytesWritten, portMAX_DELAY);
-
-  free(audioBuffer);
-}
-
-void stopsound()
-{
-  int16_t stop[8] = {0,0,0,0,0,0,0,0};
-  size_t bitw = 0;
-  i2s_write(I2S_NUM_1, stop ,sizeof(stop) , &bitw, portMAX_DELAY);
-}
 
 int servo1Pos = 45;
 int servo2Pos = 90;
@@ -556,7 +523,7 @@ int height = fb->height;
 
             // rgb[index] = 0;
             // rgb[index+1] = 0;
-            if((rgb[index] > 240 && rgb[index+1] > 240 && rgb[index+2] > 240) && (rgb[index+2] > rgb[index] && rgb[index+2] > rgb[index+1]) )
+            if(rgb[index] > 248 && (rgb[index+2] > rgb[index] && rgb[index+2] > rgb[index+1]) )
                 {
                   rgb[index] = 255;
                   rgb[index+1] = 255;
@@ -579,7 +546,7 @@ int height = fb->height;
     int points[2] = {0,0};
     int dotsFound = 0;
 
-    for(int x = 0; x < width; x++) 
+    for(int x = width/4; x < width; x++) 
     {
         for(int y = (4*height)/10; y < (6*height)/10; y++) 
         {
@@ -606,7 +573,7 @@ int height = fb->height;
             break;
         }
     }
-    for(int x = width-1; x > width/2; x--) 
+    for(int x = (3*width/4) - 1; x > 0; x--) 
     {
         for(int y = (4*height)/10; y < (6*height)/10; y++) 
         {
@@ -699,7 +666,7 @@ void blinkLaser(int duration) {
   int blinkInterval = 200; // Adjust this value to change the blink speed (in milliseconds)
 int16_t boop[36] = {30000,30000,30000,30000,30000,30000,30000,30000,0,0,0,0,0,0,0,0,30000,30000,30000,30000,30000,30000,30000,30000,0,0,0,0,0,0,0,0};
   size_t bitw = 0;
-  
+  i2s_start(I2S_NUM_1);
   while ((currentTime - startTime) < duration) {
     currentTime = millis();
     digitalWrite(LASER_PIN, HIGH);
@@ -709,7 +676,8 @@ int16_t boop[36] = {30000,30000,30000,30000,30000,30000,30000,30000,0,0,0,0,0,0,
     digitalWrite(LASER_PIN, LOW);
     delay(blinkInterval / 2);
   }
-  stopsound();
+  i2s_stop(I2S_NUM_1);
+  
   Serial.print("laser stop");
 }
 
@@ -853,11 +821,11 @@ static esp_err_t cmd_handler(httpd_req_t *req){
 static esp_err_t speaker_handler(httpd_req_t *req){
   Serial.println("speak");
     
-
+i2s_start(I2S_NUM_1);
 size_t bytes_written;
   i2s_write(I2S_NUM_1, sample_buffer, sizeof(sample_buffer), &bytes_written, portMAX_DELAY);
 
-
+i2s_stop(I2S_NUM_1);
   Serial.println("speakdone");
   
 
