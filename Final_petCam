@@ -1,0 +1,981 @@
+
+
+#include "esp_camera.h"
+#include <WiFi.h>
+#include "esp_timer.h"
+#include "img_converters.h"
+#include "Arduino.h"
+#include "fb_gfx.h"
+#include "soc/soc.h"             // disable brownout problems
+#include "soc/rtc_cntl_reg.h"    // disable brownout problems
+#include "esp_http_server.h"
+#include <Servo.h>
+#include <JPEGDEC.h>
+#include <TFT_eSPI.h>
+#include "esp_jpg_decode.h"
+#include <Arduino.h>
+
+#include <driver/i2s.h>
+
+#include "audio.h"
+
+Servo servo1;
+Servo servo2;
+
+
+// Replace with your network credentials
+const char* ssid = "longlongint";
+const char* password = "1010101010";
+
+#define PART_BOUNDARY "123456789000000000000987654321"
+
+  #define PWDN_GPIO_NUM    -1
+  #define RESET_GPIO_NUM   -1
+  #define XCLK_GPIO_NUM    21
+  #define SIOD_GPIO_NUM    26
+  #define SIOC_GPIO_NUM    27
+  
+  #define Y9_GPIO_NUM      35
+  #define Y8_GPIO_NUM      34
+  #define Y7_GPIO_NUM      39
+  #define Y6_GPIO_NUM      36
+  #define Y5_GPIO_NUM      19
+  #define Y4_GPIO_NUM      18
+  #define Y3_GPIO_NUM       5
+
+  #define Y2_GPIO_NUM       4
+  #define VSYNC_GPIO_NUM   25
+  #define HREF_GPIO_NUM    23
+  #define PCLK_GPIO_NUM    22
+
+
+#define SERVO_1      14 
+#define SERVO_2      13 
+#define LASER_PIN    2 
+
+#define SERVO_STEP   5
+
+/////
+// Define the I2S pin configuration
+#define I2S_BCLK_PIN 0 // BCLK pin
+#define I2S_LRC_PIN 33  // LRC pin
+#define I2S_DOUT_PIN 32 // DIN (Data out) pin
+
+// Define the parameters for the audio playback
+#define SAMPLE_RATE 8000           // Sample rate in Hz
+#define SAMPLE_SIZE_BITS 16         // Sample size in bits
+#define SAMPLE_SIZE_BYTES (SAMPLE_SIZE_BITS / 8)
+
+// Define musical notes with their frequencies (in Hz)
+#define NOTE_C4 261.63
+#define NOTE_D4 293.66
+#define NOTE_E4 329.63
+#define NOTE_F4 349.23
+#define NOTE_G4 392.00
+#define NOTE_A4 440.00
+#define NOTE_B4 493.88
+#define NOTE_C5 523.25
+
+// Define durations for each note (in milliseconds)
+#define NOTE_DURATION 500
+
+// Volume control (adjust as needed)
+#define VOLUME_FACTOR 1 // Adjust volume by multiplying the samples with this factor
+////
+
+// Initialize the I2S configuration
+void initI2S() {
+  // i2s_config_t i2s_config = {
+  //   .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+  //   .sample_rate = SAMPLE_RATE,
+  //   .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+  //   .channel_format = I2S_CHANNEL_FMT_ONLY_RIGHT,
+  //   .communication_format = I2S_COMM_FORMAT_I2S_MSB,
+  //   .intr_alloc_flags = 0,
+  //   .dma_buf_count = 2,
+  //   .dma_buf_len = 1024 // Increase buffer length for smooth playback
+  // };
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_BCLK_PIN,
+    .ws_io_num = I2S_LRC_PIN,
+    .data_out_num = I2S_DOUT_PIN,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = 8000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
+    .communication_format = I2S_COMM_FORMAT_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 8,
+    .dma_buf_len = 64,
+    .use_apll = true
+  };
+
+
+  i2s_driver_install(I2S_NUM_1, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_NUM_1, &pin_config);
+  i2s_set_sample_rates(I2S_NUM_1, 8000); // Set the sample rate to 22050 Hz
+
+}
+
+void deinitI2S() {
+  i2s_driver_uninstall(I2S_NUM_1); // Deinitialize the I2S driver for I2S_NUM_1
+}
+
+
+
+
+
+
+int servo1Pos = 45;
+int servo2Pos = 90;
+
+static const char* _STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+static const char* _STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
+static const char* _STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+httpd_handle_t camera_httpd = NULL;
+httpd_handle_t stream_httpd = NULL;
+
+static const char PROGMEM INDEX_HTML[] = R"rawliteral(
+<html>
+  <head>
+    <title>ESP32-CAM Robot</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      body { font-family: Arial; text-align: center; margin:0px auto; padding-top: 30px;}
+      table { margin-left: auto; margin-right: auto; }
+      td { padding: 8 px; }
+      .button {
+        background-color: #777777;
+        border: none;
+        color: white;
+        padding: 10px 20px;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+        font-size: 18px;
+        margin: 6px 3px;
+        cursor: pointer;
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        -khtml-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: rgba(0,0,0,0);
+      }
+      img {  width: auto ;
+        max-width: 100% ;
+        height: auto ; 
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Pet cam V1</h1>
+    <img src="" id="photo" >
+
+    <table>
+      <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('up');" ontouchstart="toggleCheckbox('up');">Up</button></td></tr>
+      <tr><td align="center"><button class="button" onmousedown="toggleCheckbox('left');" ontouchstart="toggleCheckbox('left');">Left</button></td><td align="center"></td><td align="center"><button class="button" onmousedown="toggleCheckbox('right');" ontouchstart="toggleCheckbox('right');">Right</button></td></tr>
+      <tr><td colspan="3" align="center"><button class="button" onmousedown="toggleCheckbox('down');" ontouchstart="toggleCheckbox('down');">Down</button></td></tr>                   
+    </table>
+    <div id="pointsDiv"></div>
+    <table>
+      <tr><td align="center"><button class="button" onmousedown="toggleCheckbox('laser');" ontouchstart="toggleCheckbox('laser');">Laser</button></td> 
+      <td  align="center"><button class="button" onmousedown="toggleCheckbox('snap');" ontouchstart="toggleCheckbox('snap');">distance</button></td>
+      <td  align="center"><button class="button" onmousedown="toggleCheckbox('pic');" ontouchstart="toggleCheckbox('pic');">picture</button></td>
+      <td  align="center"><button class="button" onmousedown="toggleCheckbox('speaker');" ontouchstart="toggleCheckbox('speaker');">speaker</button></td>
+      <td  align="center"><button class="button" onmousedown="toggleCheckbox('blink_laser');" ontouchstart="toggleCheckbox('blink_laser');">Blink Laser</button></td></tr>
+      </table>
+      
+        <img src="" id="pictureimg" >
+        <div id="pointsDiv"></div>
+   <script>
+   function toggleCheckbox(x) {
+     var xhr = new XMLHttpRequest();
+     xhr.open("GET", "/action?go=" + x, true);
+     xhr.send();
+   }
+   window.onload = document.getElementById("photo").src = window.location.href.slice(0, -1) + ":81/stream";
+  
+  
+
+
+  
+  
+  function toggleCheckbox(x) {
+  var xhr = new XMLHttpRequest();
+  if (x === 'blink_laser') {
+    var duration = prompt("Enter the duration in milliseconds:", "1000");
+    xhr.open("GET", "/blink_laser?duration=" + duration, true);
+    xhr.send();
+  }
+  else if(x === 'pic') {
+    xhr.responseType = 'blob';
+    xhr.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        var url = URL.createObjectURL(this.response);
+        document.getElementById("pictureimg").src = url;
+      }
+    };
+    xhr.open("GET", "/picture", true);
+    xhr.send();
+  } 
+  else if(x === 'snap') {
+    xhr.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        var pointsDiv = document.getElementById("pointsDiv");
+        pointsDiv.textContent = this.responseText;
+      }
+    };
+    xhr.open("GET", "/snapshot", true);
+    xhr.send();
+  }
+  else if (x === 'speaker') {
+
+    xhr.open("GET", "/speaker", true);
+    xhr.send();
+        } 
+  
+  else {
+    xhr.open("GET", "/action?go=" + x, true);
+    xhr.send();
+  }
+}
+window.onload = document.getElementById("photo").src = window.location.href.slice(0, -1) + ":81/stream";
+  </script>
+  </body>
+</html>
+)rawliteral";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static esp_err_t index_handler(httpd_req_t *req){
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, (const char *)INDEX_HTML, strlen(INDEX_HTML));
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+static esp_err_t stream_handler(httpd_req_t *req){
+  camera_fb_t * fb = NULL;
+  esp_err_t res = ESP_OK;
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+  char * part_buf[64];
+
+  res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
+  if(res != ESP_OK){
+    return res;
+  }
+
+  while(true){
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("Camera capture failed");
+      res = ESP_FAIL;
+    } else {
+      if(fb->width > 1){
+        if(fb->format != PIXFORMAT_JPEG){
+          bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+          esp_camera_fb_return(fb);
+          fb = NULL;
+          if(!jpeg_converted){
+            Serial.println("JPEG compression failed");
+            res = ESP_FAIL;
+          }
+        } else {
+          _jpg_buf_len = fb->len;
+          _jpg_buf = fb->buf;
+        }
+      }
+      
+
+
+
+
+
+
+
+
+
+
+
+    }
+    if(res == ESP_OK){
+      size_t hlen = snprintf((char *)part_buf, 64, _STREAM_PART, _jpg_buf_len);
+      res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
+    }
+    if(res == ESP_OK){
+      res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
+    }
+    if(res == ESP_OK){
+      res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
+    }
+    if(fb){
+      esp_camera_fb_return(fb);
+      fb = NULL;
+      _jpg_buf = NULL;
+    } else if(_jpg_buf){
+      free(_jpg_buf);
+      _jpg_buf = NULL;
+    }
+    if(res != ESP_OK){
+      break;
+    }
+    //Serial.printf("MJPG: %uB\n",(uint32_t)(_jpg_buf_len));
+  }
+  return res;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static esp_err_t picture_handler(httpd_req_t *req){
+  camera_fb_t * fb = NULL;
+  esp_err_t res = ESP_OK;
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+
+  sensor_t * s = esp_camera_sensor_get();
+    s->set_quality(s, 4);
+  s->set_framesize(s, FRAMESIZE_SVGA);//FRAMESIZE_SVGA
+
+
+
+  fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera capture failed");
+    return httpd_resp_send_500(req);
+  }
+
+
+
+  if(fb->format != PIXFORMAT_JPEG){
+    bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+    esp_camera_fb_return(fb);
+    if(!jpeg_converted){
+      Serial.println("JPEG compression failed");
+      return httpd_resp_send_500(req);
+    }
+  } else {
+    _jpg_buf_len = fb->len;
+    _jpg_buf = fb->buf;
+  }
+
+
+
+////////////////////////////////////////
+////////////////////////////////////////
+////////////////////////////////////////
+
+ 
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
+  httpd_resp_send(req, (const char *)_jpg_buf, _jpg_buf_len);
+  
+
+  
+  if(fb){
+    esp_camera_fb_return(fb);
+    fb = NULL;
+    _jpg_buf = NULL;
+  } else if(_jpg_buf){
+    free(_jpg_buf);
+    _jpg_buf = NULL;
+  }
+
+
+
+
+  s->set_framesize(s, FRAMESIZE_SVGA);
+    s->set_quality(s, 12);
+
+  return ESP_OK;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+static esp_err_t camera_handler(httpd_req_t *req){
+  camera_fb_t * fb = NULL;
+  esp_err_t res = ESP_OK;
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+
+  sensor_t * s = esp_camera_sensor_get();
+  s->set_framesize(s, FRAMESIZE_SVGA);
+  s->set_quality(s, 12);
+  //s->set_pixformat()
+
+
+  fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera capture failed");
+    return httpd_resp_send_500(req);
+  }
+
+
+
+  if(fb->format != PIXFORMAT_JPEG){
+    bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
+    esp_camera_fb_return(fb);
+    if(!jpeg_converted){
+      Serial.println("JPEG compression failed");
+      return httpd_resp_send_500(req);
+    }
+  } else {
+    _jpg_buf_len = fb->len;
+    _jpg_buf = fb->buf;
+  }
+
+
+
+////////////////////////////////////////
+////////////////////////////////////////
+////////////////////////////////////////
+
+
+ // allocate memory to store the rgb data (in psram, 3 bytes per pixel)
+     void *ptrVal = NULL;                                                                                 // create a pointer for memory location to store the data
+     uint32_t ARRAY_LENGTH = fb->width * fb->height * 3;                                                  // calculate memory required to store the RGB data (i.e. number of pixels in the jpg image x 3)
+     if (heap_caps_get_free_size( MALLOC_CAP_SPIRAM) <  ARRAY_LENGTH) {
+
+       Serial.println("error1");
+     }
+     ptrVal = heap_caps_malloc(ARRAY_LENGTH, MALLOC_CAP_SPIRAM);                                          // allocate memory space for the rgb data
+     uint8_t *rgb = (uint8_t *)ptrVal;                                                                    // create the 'rgb' array pointer to the allocated memory space
+     
+   // convert the captured jpg image (fb) to rgb data (store in 'rgb' array)
+
+     bool jpeg_converted = fmt2rgb888(fb->buf, fb->len, PIXFORMAT_JPEG, rgb);
+     if (!jpeg_converted) {
+       Serial.println("error2");
+     }
+int width = fb->width;
+int height = fb->height;
+  if(fb){
+    esp_camera_fb_return(fb);
+    fb = NULL;
+    _jpg_buf = NULL;
+  } else if(_jpg_buf){
+    free(_jpg_buf);
+    _jpg_buf = NULL;
+  }
+
+
+
+
+
+
+  ///////////////////////////////////////////////
+      ///////////////////////////////////////////////
+      ///////////////////////////////////////////////
+    for(int x = 0; x < width; x++) {
+        for(int y = (4*height)/10; y < (6*height)/10; y++)  {
+            int index = (y * width + x) * 3;
+
+            // int filter = rgb[index+2] - (rgb[index] + 4 + rgb[index+1])/2;
+            // if(filter < 0)
+            // rgb[index+2] = 0;
+            // else
+            // rgb[index+2] = rgb[index+2] - (rgb[index] + rgb[index+1])/2;
+
+
+            // rgb[index] = 0;
+            // rgb[index+1] = 0;
+            if(rgb[index] > 248 && (rgb[index+2] > rgb[index] && rgb[index+2] > rgb[index+1]) )
+                {
+                  rgb[index] = 255;
+                  rgb[index+1] = 255;
+                  rgb[index+2] = 255;
+                }
+              else
+              {
+                  rgb[index] = 0;
+                  rgb[index+1] = 0;
+                  rgb[index+2] = 0;
+                }
+        }
+    }
+            
+
+
+
+
+      //red +2 green +1 blue +0
+    int points[2] = {0,0};
+    int dotsFound = 0;
+
+    for(int x = width/4; x < width; x++) 
+    {
+        for(int y = (4*height)/10; y < (6*height)/10; y++) 
+        {
+            
+            int index = (y * width + x) * 3;
+                if(dotsFound == 0 || x - points[0] > 10)
+                {  
+                    if(rgb[index+2] > 10 )
+                    {
+                     Serial.print("A");
+                     Serial.print(x);
+                      points[dotsFound] += x;
+                    Serial.print("C\n");
+                    dotsFound++;
+                    break;
+                    }
+
+                }
+
+        }
+        if(dotsFound == 1)
+        {
+        
+            break;
+        }
+    }
+    for(int x = (3*width/4) - 1; x > 0; x--) 
+    {
+        for(int y = (4*height)/10; y < (6*height)/10; y++) 
+        {
+            
+            int index = (y * width + x) * 3;
+
+                    if(rgb[index+2] > 10 )
+                    {
+                     Serial.print("A");
+                     Serial.print(x);
+                      points[dotsFound] += x;
+                    Serial.print("C\n");
+                    dotsFound++;
+                    break;
+                    }
+
+                
+
+        }
+        if(dotsFound == 2)
+        {
+        
+            break;
+        }
+    }
+Serial.println(points[1]-points[0]);
+    int distance = -(points[0]-points[1]);
+    if (dotsFound == 0)
+        distance = -1;//feet
+    else if (dotsFound == 1)
+        distance = 15;//feet
+    else if (distance < 15)
+      distance = 10;//feet
+     else if (distance < 20)
+      distance = 9;//feet
+    else if (distance < 25)
+      distance = 8;//feet
+    else if (distance < 30)
+      distance = 7;//feet
+    else if (distance < 35)
+      distance = 6;//feet
+    else if (distance < 40)
+      distance = 5;//feet
+    else if (distance < 50)
+      distance = 4;//feet
+    else if (distance < 60)
+      distance = 3;//feet
+    else if (distance < 120)
+      distance = 2;//feet
+    else if(distance < 150)
+      distance = 1;//feet
+    else
+      distance = 0;//feet
+    // distance = 150/distance;
+char distance_str[20];
+snprintf(distance_str, sizeof(distance_str), "distance: %d feet", distance);
+      
+
+
+      ///////////////////////////////////////////////
+      ///////////////////////////////////////////////
+      ///////////////////////////////////////////////
+
+heap_caps_free(ptrVal);     // rgb data
+
+
+
+  snprintf(distance_str, sizeof(distance_str), "%s", distance_str);
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, distance_str, strlen(distance_str));
+  
+
+
+  s->set_framesize(s, FRAMESIZE_SVGA);
+    s->set_quality(s, 12);
+
+  return ESP_OK;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Add this function to blink the laser rapidly
+void blinkLaser(int duration) {
+  Serial.print(duration);
+  unsigned long startTime = millis();
+  unsigned long currentTime = millis();
+  int blinkInterval = 200; // Adjust this value to change the blink speed (in milliseconds)
+int16_t boop[36] = {30000,30000,30000,30000,30000,30000,30000,30000,0,0,0,0,0,0,0,0,30000,30000,30000,30000,30000,30000,30000,30000,0,0,0,0,0,0,0,0};
+  size_t bitw = 0;
+  i2s_start(I2S_NUM_1);
+  while ((currentTime - startTime) < duration) {
+    currentTime = millis();
+    digitalWrite(LASER_PIN, HIGH);
+    i2s_write(I2S_NUM_1, boop ,sizeof(boop) , &bitw, portMAX_DELAY);
+    delay(blinkInterval / 2);
+
+    digitalWrite(LASER_PIN, LOW);
+    delay(blinkInterval / 2);
+  }
+  i2s_stop(I2S_NUM_1);
+  
+  Serial.print("laser stop");
+}
+
+// Add this new handler function
+static esp_err_t blink_laser_handler(httpd_req_t *req) {
+  char *buf;
+  size_t buf_len;
+  char variable[32] = {0,};
+
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1) {
+    buf = (char *)malloc(buf_len);
+    if (!buf) {
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      if (httpd_query_key_value(buf, "duration", variable, sizeof(variable)) == ESP_OK) {
+        int duration = atoi(variable);
+        blinkLaser(duration);
+      } else {
+        free(buf);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+      }
+    } else {
+      free(buf);
+      httpd_resp_send_404(req);
+      return ESP_FAIL;
+    }
+    free(buf);
+  } else {
+    httpd_resp_send_404(req);
+    return ESP_FAIL;
+  }
+
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, NULL, 0);
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+static esp_err_t cmd_handler(httpd_req_t *req){
+  char*  buf;
+  size_t buf_len;
+  char variable[32] = {0,};
+  int * picval = (int *)req->user_ctx;
+  camera_config_t * configcam = (camera_config_t *)req->user_ctx;
+  
+  buf_len = httpd_req_get_url_query_len(req) + 1;
+  if (buf_len > 1) {
+    buf = (char*)malloc(buf_len);
+    if(!buf){
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      if (httpd_query_key_value(buf, "go", variable, sizeof(variable)) == ESP_OK) {
+      } else {
+        free(buf);
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+      }
+    } else {
+      free(buf);
+      httpd_resp_send_404(req);
+      return ESP_FAIL;
+    }
+    free(buf);
+  } else {
+    httpd_resp_send_404(req);
+    return ESP_FAIL;
+  }
+
+  sensor_t * s = esp_camera_sensor_get();
+  //flip the camera vertically
+  //s->set_vflip(s, 1);          // 0 = disable , 1 = enable
+  // mirror effect
+  //s->set_hmirror(s, 1);          // 0 = disable , 1 = enable
+
+  int res = 0;
+  static bool laserOn = false;
+  
+  if(!strcmp(variable, "up")) {
+    if(servo1Pos <= 85) {
+      servo1Pos += 5;
+      servo1.write(servo1Pos);
+    }
+    Serial.println(servo1Pos);
+    Serial.println("Up");
+  }
+  else if(!strcmp(variable, "left")) {
+    if(servo2Pos <= 175) {
+      servo2Pos += 5;
+      servo2.write(servo2Pos);
+    }
+    Serial.println(servo2Pos);
+    Serial.println("Left");
+  }
+  else if(!strcmp(variable, "right")) {
+    if(servo2Pos >= 5) {
+      servo2Pos -= 5;
+      servo2.write(servo2Pos);
+    }
+    Serial.println(servo2Pos);
+    Serial.println("Right");
+  }
+  else if(!strcmp(variable, "down")) {
+    if(servo1Pos >= 10) {
+      servo1Pos -= 5;
+      servo1.write(servo1Pos);
+    }
+    Serial.println(servo1Pos);
+    Serial.println("Down");
+  }
+  else if(!strcmp(variable, "laser")) {
+    // Toggle the laser state
+    laserOn = !laserOn;
+    digitalWrite(LASER_PIN, laserOn ? HIGH : LOW);  // Turn laser on or off
+    Serial.println(laserOn ? "Laser ON" : "Laser OFF");
+  }
+  else {
+    res = -1;
+  }
+
+  if(res){
+    return httpd_resp_send_500(req);
+  }
+
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, NULL, 0);
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+static esp_err_t speaker_handler(httpd_req_t *req){
+  Serial.println("speak");
+    
+i2s_start(I2S_NUM_1);
+size_t bytes_written;
+  i2s_write(I2S_NUM_1, sample_buffer, sizeof(sample_buffer), &bytes_written, portMAX_DELAY);
+
+i2s_stop(I2S_NUM_1);
+  Serial.println("speakdone");
+  
+
+
+    return httpd_resp_send(req, NULL, 0);
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void startCameraServer(int * picval, camera_config_t * configcam){
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  httpd_uri_t index_uri = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = index_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t cmd_uri = {
+    .uri       = "/action",
+    .method    = HTTP_GET,
+    .handler   = cmd_handler,
+    .user_ctx  = picval, configcam
+  };
+  httpd_uri_t stream_uri = {
+    .uri       = "/stream",
+    .method    = HTTP_GET,
+    .handler   = stream_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t pic_uri = {
+    .uri       = "/snapshot",
+    .method    = HTTP_GET,
+    .handler   = camera_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t picture_uri = {
+    .uri       = "/picture",
+    .method    = HTTP_GET,
+    .handler   = picture_handler,
+    .user_ctx  = NULL
+  };
+
+    httpd_uri_t speaker_uri = {
+    .uri       = "/speaker",
+    .method    = HTTP_GET,
+    .handler   = speaker_handler,
+    .user_ctx  = NULL
+};
+
+httpd_uri_t blink_laser_uri = {
+    .uri = "/blink_laser",
+    .method = HTTP_GET,
+    .handler = blink_laser_handler,
+    .user_ctx = NULL
+};
+
+  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+      httpd_register_uri_handler(camera_httpd, &index_uri);
+      httpd_register_uri_handler(camera_httpd, &cmd_uri);
+      httpd_register_uri_handler(camera_httpd, &picture_uri);
+      httpd_register_uri_handler(camera_httpd, &pic_uri);
+      httpd_register_uri_handler(camera_httpd, &speaker_uri);
+      httpd_register_uri_handler(camera_httpd, &blink_laser_uri); 
+  }
+  config.server_port += 1;
+  config.ctrl_port += 1;
+  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(stream_httpd, &stream_uri);
+  }
+}
+
+void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
+
+  
+  Serial.begin(115200);
+  Serial.setDebugOutput(true);
+  
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG; 
+  // config.grab_mode = CAMERA_GRAB_WHEN_EMPTY; 
+  // config.fb_location = CAMERA_FB_IN_PSRAM;
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+  }
+
+  // Camera init
+  esp_err_t err = esp_camera_init(&config);
+
+
+
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    return;
+  }
+  // Wi-Fi connection
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected");
+  
+  Serial.print("Camera Stream Ready! Go to: http://");
+  Serial.println(WiFi.localIP());
+
+  servo2.attach(SERVO_2);
+  servo1.attach(SERVO_1);
+
+  //Add Laser pin assignment: pin 12
+  pinMode(LASER_PIN, OUTPUT);
+  
+  // Start streaming web server
+initI2S();
+  int hasTakenPic = 0;
+  startCameraServer(&hasTakenPic, &config);
+}
+
+void loop() {
+
+}
